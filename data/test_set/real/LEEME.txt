@@ -1,0 +1,6 @@
+Coloca aquí las fotos de los tableros impresos.
+Nombra cada foto como el tablero + la condición, p. ej. p01_impreso_5x5__luz_natural.jpg
+y copia el JSON correspondiente de ../printables con el MISMO nombre que la foto
+(p01_impreso_5x5__luz_natural.json). Sugerencias de condiciones: luz natural, lámpara,
+sombra parcial, ángulo leve, rotada, desde lejos, foto de la pantalla del celular.
+Evalúa con:  python -m scripts.benchmark vision --dir data/test_set/real

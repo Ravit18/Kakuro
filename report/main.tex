@@ -1,0 +1,202 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-tabla]{babel}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{graphicx,booktabs,amsmath,hyperref,float,subcaption}
+\usepackage{listings,xcolor}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,backgroundcolor=\color{gray!8}}
+
+\title{Kakuro: de la imagen a la solución\\\large Visión computacional + Programación con Restricciones}
+\author{Equipo: \underline{\hspace{6cm}}\\Tópicos en Ciencias de la Computación -- UPC}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Presentamos un sistema end-to-end que recibe una fotografía o imagen digital de un Kakuro, extrae su estado inicial
+mediante visión computacional y una red neuronal convolucional propia, y lo resuelve con el solver CP-SAT de OR-Tools.
+La Fase~1 (extracción) combina preprocesamiento con OpenCV, segmentación por proyecciones morfológicas, clasificación
+de celdas y reconocimiento de dígitos con una CNN entrenada sólo con datos sintéticos. Sobre el dataset de prueba digital y simulado (14 imágenes)
+alcanza \textbf{100\%} de pistas correctas y \textbf{100\%} de tableros extraídos sin error.
+\end{abstract}
+
+\section{Problema}
+Un Kakuro es una grilla con celdas blancas (a rellenar con dígitos 1--9) y celdas negras. Algunas celdas negras están
+divididas por una diagonal y contienen pistas: el número del triángulo inferior izquierdo es la suma de la corrida
+vertical que empieza debajo, y el del triángulo superior derecho la suma de la corrida horizontal a la derecha.
+Dentro de una corrida no se repiten dígitos.
+
+\section{Fase 1: visión computacional e IA}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/binary.png}\caption{Binarización adaptativa}\end{subfigure}
+\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/board.png}\caption{Tablero y esquinas}\end{subfigure}
+\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/grid.png}\caption{Rectificado + grilla}\end{subfigure}\\[4pt]
+\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/cells.png}\caption{Clasificación de celdas}\end{subfigure}
+\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/digits.png}\caption{Dígitos 28$\times$28}\end{subfigure}
+\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/solution.png}\caption{Solución sobre la foto}\end{subfigure}
+\caption{Etapas del pipeline sobre una imagen con ángulo fuerte (\texttt{s05\_angulo\_fuerte}).}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection{Preprocesamiento y corrección de perspectiva (\texttt{vision/preprocess.py})}
+\begin{enumerate}
+  \item Conversión a escala de grises y desenfoque gaussiano $5\times5$.
+  \item Binarización adaptativa gaussiana invertida (bloque $\approx$ lado/30): robusta a iluminación no uniforme, a diferencia de un umbral global.
+  \item Localización del tablero como la \emph{componente conexa con más píxeles de tinta} (líneas y bordes de celdas negras).
+        Elegir la componente y no el contorno más grande evita confundir el tablero con el borde de la hoja cuando la foto se toma sobre una mesa.
+  \item Esquinas: envolvente convexa de la componente y \texttt{approxPolyDP} hasta obtener 4 vértices (respaldo: \texttt{minAreaRect}).
+  \item Homografía con \texttt{getPerspectiveTransform} y \texttt{warpPerspective} a una vista cenital de lado mayor 900\,px.
+\end{enumerate}
+
+\subsection{Segmentación de la grilla (\texttt{vision/grid.py})}
+Sobre el tablero rectificado se aplica una apertura morfológica con un elemento estructurante horizontal (y otro vertical)
+de longitud menor que una celda: sobreviven las líneas de la grilla y desaparecen dígitos y diagonales. La proyección
+(suma por filas/columnas) produce un perfil con picos en cada línea. El número de celdas $n$ se estima muestreando el
+perfil en $k\cdot L/n$: los divisores de $n$ también caen sobre picos, pero sus múltiplos no, por lo que se elige el
+mayor $n$ con puntaje $\geq 0.8\cdot$máximo. Luego cada línea se ajusta al pico local más cercano, lo que tolera
+distorsiones residuales de la perspectiva. El usuario puede forzar filas/columnas con \texttt{--rows/--cols}.
+
+\subsection{Clasificación de celdas (\texttt{vision/cells.py})}
+\begin{itemize}
+  \item \textbf{Blanca vs.\ oscura}: mediana de intensidad de cada celda y umbral de Otsu~\cite{otsu} entre celdas (punto medio de ambas clases).
+  \item \textbf{Tinta}: en cada celda oscura se binariza con Otsu y la tinta es la clase minoritaria, por lo que funciona tanto con texto blanco
+        sobre negro como con texto negro sobre gris. Si el contraste es bajo, la celda es negra sin pista.
+  \item \textbf{Diagonal}: se elimina la componente conexa que atraviesa la celda y una banda alrededor de la diagonal teórica;
+        se descartan además trazos finos oblicuos (fragmentos de la diagonal).
+  \item \textbf{Triángulos}: inferior izquierdo $\rightarrow$ suma vertical; superior derecho $\rightarrow$ suma horizontal.
+  \item \textbf{Dígitos}: componentes conexas filtradas por tamaño, fusión de fragmentos y separación de dígitos pegados por el mínimo de la proyección vertical.
+        Cada dígito se recorta en escala de grises (``tinta suave'') y se normaliza a $28\times28$ al estilo MNIST.
+\end{itemize}
+
+\subsection{Reconocimiento de dígitos (\texttt{vision/ocr.py})}
+\textbf{CNN propia} (PyTorch~\cite{pytorch}), inspirada en LeNet/VGG~\cite{lecun}:
+2 bloques [Conv3$\times$3--BN--ReLU]$\times$2 + MaxPool (32 y 64 filtros), Dropout 0.3, FC 128, salida de 10 clases.
+Optimizador AdamW, OneCycleLR, \emph{label smoothing} 0.05 y aumentación en línea (rotación, escala, traslación).
+
+\textbf{Línea base}: Tesseract 5~\cite{tesseract} preentrenado, modo línea (\texttt{--psm 7}) con lista blanca 0--9.
+
+\textbf{Reparación guiada por el dominio}: una corrida de $n$ celdas sólo admite sumas en
+$\left[\frac{n(n+1)}{2},\ \sum_{i=10-n}^{9} i\right]$. Si la lectura es imposible, se reemplaza por la siguiente
+alternativa más probable de la CNN (top-3 por dígito) que sea factible.
+
+\subsection{Estructura de salida}
+El estado inicial se exporta como JSON (esquema en \texttt{core/schema.json}), que es el contrato con la Fase~2:
+\begin{lstlisting}
+{"rows": 5, "cols": 5,
+ "grid": [["#","18\\","17\\","#","#"], ["\\15",".",".","23\\","#"], ...],
+ "ocr_engine": "cnn", "clue_confidence": {"0,1": 0.998, ...}, "warnings": []}
+\end{lstlisting}
+\texttt{"."} = celda blanca, \texttt{"\#"} = negra, \texttt{"D\textbackslash R"} = pista (suma vertical \textbackslash{} suma horizontal).
+
+\section{Datos}
+\subsection{Entrenamiento: datos sintéticos}
+No existe un dataset público de imágenes de Kakuro etiquetadas, por lo que se aplica \emph{domain randomization}~\cite{tobin}:
+\begin{enumerate}
+  \item Se generan tableros aleatorios válidos (patrón aleatorio + relleno por backtracking sin repetir dígitos por corrida $\Rightarrow$ sumas).
+  \item Se dibujan con 10 fuentes libres, dos estilos (negro/blanco y gris/negro), tamaños de celda de 44--84\,px y grosores variables.
+  \item Se simula una foto: hoja sobre un fondo texturizado, perspectiva ($\pm$8\%), rotación ($\pm$12°), tinte de luz, gradiente de iluminación,
+        desenfoque, ruido gaussiano, reescalado y compresión JPEG (calidad 35--95).
+  \item Cada imagen pasa por \textbf{el mismo pipeline} de inferencia; como la suma real se conoce, cada recorte queda etiquetado automáticamente.
+        Si el número de dígitos segmentados no coincide con la etiqueta, el recorte se descarta.
+\end{enumerate}
+Con 2500 tableros de 5 estilos se obtuvieron 63\,078 dígitos (90\% entrenamiento / 10\% validación).
+
+\subsection{Dataset de prueba (\texttt{data/test\_set/})}
+\begin{figure}[H]
+\centering\includegraphics[width=0.9\textwidth]{figs/test_set.jpg}
+\caption{Dataset de prueba: 10 fotos simuladas, cada una con una condición controlada, y 7 versiones digitales en 5 estilos.}
+\end{figure}
+\begin{itemize}
+  \item \textbf{Digitales (7)}: render limpio 5$\times$5 y 10$\times$10, estilo gris, captura reducida al 55\% con JPEG, estilo app invertido, triángulo blanco/negro y color.
+  \item \textbf{Fotos simuladas (10)}: luz baja, sombra lateral, reflejo brillante, ángulo leve, ángulo fuerte, rotación 10°,
+        desenfoque, fondo oscuro, JPEG fuerte (calidad 25) y luz cálida.
+  \item \textbf{Impresas (fotos reales)}: 8 tableros en \texttt{printables/kakuro\_para\_imprimir.pdf}, impresos y fotografiados con celular
+        en distintas condiciones (\texttt{data/test\_set/real/}). Las fotos reales deben ser tomadas por el equipo; sus resultados se agregan a la tabla.
+\end{itemize}
+Las semillas del dataset de prueba son distintas de las de entrenamiento.
+
+\section{Resultados de la Fase 1}
+Métricas: \emph{grid} = filas$\times$columnas correctas; \emph{celdas} = blanca/no blanca correcta;
+\emph{pistas} = valor exacto por (celda, dirección); \emph{exacto} = tablero sin ningún error;
+\emph{resuelto} = el solver, con el JSON extraído, produce una solución válida del tablero real.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llcccccc}
+\toprule
+Conjunto & OCR & Imágenes & Grid & Celdas & Pistas & Exacto & Resuelto\\
+\midrule
+Digital (5 estilos) & CNN & 7 & 100 & 100 & 100 & 100 & 100\\
+Digital (5 estilos) & Tesseract & 7 & 100 & 100 & 97.4 & 42.9 & 42.9\\
+Fotos simuladas & CNN & 10 & 100 & 100 & 100 & 100 & 100\\
+Fotos simuladas & Tesseract & 10 & 100 & 100 & 86.7 & 30.0 & 30.0\\
+\midrule
+Sintético aleatorio (estrés) & CNN & 100 & 90.0 & 89.4 & 84.0 & 63.0 & 63.0\\
+Sintético aleatorio (estrés) & Tesseract & 100 & 90.0 & 89.4 & 52.1 & 11.0 & 11.0\\
+\midrule
+Imágenes reales (6 estilos) & CNN & 11 & \multicolumn{5}{c}{11/11 válidas, sin avisos y con solución única}\\
+Imágenes reales (6 estilos) & Tesseract & 11 & \multicolumn{5}{c}{1/11}\\
+\bottomrule
+\end{tabular}
+\caption{Resultados de extracción. Tiempo medio por imagen: $\approx$0.3\,s con la CNN y $\approx$2\,s con Tesseract (CPU).}
+\end{table}
+
+\noindent Precisión de la CNN en validación (recortes): \textbf{98.6\%}. El conjunto ``sintético aleatorio'' usa la misma
+aumentación agresiva del entrenamiento (celdas de hasta 31\,px, contraste muy bajo) y sirve como prueba de estrés: la mayoría
+de sus errores son pistas casi ilegibles incluso para una persona. La CNN supera a Tesseract en todas las condiciones y es
+unas 20 veces más rápida; la mayor diferencia aparece con desenfoque, donde Tesseract lee sólo 4 de 22 pistas.
+
+\subsection{Comparación de modelos CP (Fase 2)}
+\begin{table}[H]\centering
+\begin{tabular}{lcccc}\toprule
+Patrón & \multicolumn{2}{c}{AllDifferent + suma} & \multicolumn{2}{c}{Tabla}\\
+ & tiempo (s) & ramas & tiempo (s) & ramas\\\midrule
+5$\times$5 & 0.013 & 515 & 0.060 & 749\\
+7$\times$7 & 0.009 & 186 & 0.009 & 0\\
+8$\times$8 & 0.022 & 1347 & 0.076 & 3388\\
+10$\times$10 & 0.046 & 2556 & 0.298 & 7342\\\bottomrule
+\end{tabular}
+\caption{Promedio de 3 tableros por patrón (\texttt{python -m scripts.benchmark solver}).}
+\end{table}
+
+\subsection{Robustez a estilos reales}
+Se evaluó además con 12 imágenes reales (internet y capturas de una app móvil) de 6 estilos: clásico, triángulo
+blanco/negro, amarillo, gris con diagonal punteada y sombra, gris claro con margen, y el estilo \emph{invertido} de la app
+(celdas a rellenar negras, pistas grises, con un recuadro azul de selección). Las decisiones que lo hicieron posible son
+generales, no específicas de cada imagen:
+\begin{itemize}
+  \item \textbf{Grilla}: búsqueda conjunta de (inicio, fin, $n$) que maximiza \emph{líneas en picos -- máximo en el interior de las celdas}; el borde de la imagen cuenta como línea y se penalizan franjas con contenido fuera del tablero.
+  \item \textbf{Escala de grises por PCA del color}: la conversión estándar deja casi iguales colores distintos (amarillo claro 249 vs.\ oscuro 242).
+  \item \textbf{Color a rellenar por regla estructural}: la primera fila y columna nunca se rellenan.
+  \item \textbf{Polaridad por triángulo} y eliminación de líneas rectas largas y diagonales (continuas o punteadas).
+  \item \textbf{CNN reentrenada} con 5 estilos sintéticos (\emph{domain randomization}).
+\end{itemize}
+Una de las 12 imágenes no es un Kakuro válido (números de relleno: una pista sin corrida, filas sin pista, ``24'' en 9 celdas);
+el validador de la Fase~1 la rechaza correctamente.
+
+\subsection{Limitaciones}
+\begin{itemize}
+  \item Se asume que el tablero es el objeto con más líneas de la imagen y que está completo dentro de la foto.
+  \item Fuentes muy decorativas o escritura a mano no están en el entrenamiento; se pueden incorporar con \texttt{--real-dir}.
+  \item Pliegues fuertes del papel (distorsión no proyectiva) no se corrigen con una sola homografía.
+\end{itemize}
+
+\section{Fase 2: modelo de Programación con Restricciones}
+Variables $x_c \in D_c$ por celda blanca, con $D_c = \{1..9\} \cap \text{cand}(R_h(c)) \cap \text{cand}(R_v(c))$.
+Para cada corrida $R$ con suma $s_R$: \texttt{AllDifferent}$(\{x_c\}_{c\in R})$ y $\sum_{c\in R} x_c = s_R$.
+Variante: una restricción de tabla (\texttt{AddAllowedAssignments}) por corrida. Se resuelve con CP-SAT~\cite{ortools}.
+
+\begin{thebibliography}{9}
+\bibitem{opencv} G.~Bradski. The OpenCV Library. \emph{Dr. Dobb's Journal of Software Tools}, 2000.
+\bibitem{otsu} N.~Otsu. A threshold selection method from gray-level histograms. \emph{IEEE Trans. SMC}, 9(1):62--66, 1979.
+\bibitem{lecun} Y.~LeCun, L.~Bottou, Y.~Bengio, P.~Haffner. Gradient-based learning applied to document recognition. \emph{Proc. IEEE}, 86(11), 1998.
+\bibitem{tesseract} R.~Smith. An overview of the Tesseract OCR engine. \emph{ICDAR}, 2007.
+\bibitem{tobin} J.~Tobin et al. Domain randomization for transferring deep neural networks from simulation to the real world. \emph{IROS}, 2017.
+\bibitem{pytorch} A.~Paszke et al. PyTorch: An imperative style, high-performance deep learning library. \emph{NeurIPS}, 2019.
+\bibitem{ortools} L.~Perron, V.~Furnon. OR-Tools CP-SAT. Google, \url{https://developers.google.com/optimization}.
+\end{thebibliography}
+\end{document}
