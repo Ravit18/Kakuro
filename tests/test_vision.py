@@ -80,3 +80,44 @@ def test_grid_and_cells_all_styles(style):
     assert (grid.rows, grid.cols) == (puzzle.rows, puzzle.cols)
     white = C.classify_cells(rect.gray, grid)
     assert {(r, c) for r in range(grid.rows) for c in range(grid.cols) if white[r, c]} == set(puzzle.white)
+
+
+@pytest.mark.parametrize("deg", [0, 30, 44, 45, 46, 60, 135])
+def test_order_corners_rotated(deg):
+    """Con el tablero muy girado en la foto (~45°) las 4 esquinas no deben repetirse."""
+    a = np.deg2rad(deg)
+    base = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]], float) * 100
+    rot = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+    pts = (base @ rot.T + 500).astype(np.float32)[[2, 0, 3, 1]]   # desordenadas
+    q = order_corners(pts)
+    assert len({tuple(p) for p in q.round(3)}) == 4
+    x, y = q[:, 0], q[:, 1]
+    assert 0.5 * np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y) > 0   # sentido horario
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_light_cells_with_shadow(seed):
+    """Una franja de sombra (mano/celular) no convierte celdas blancas en negras."""
+    rng = np.random.default_rng(seed)
+    truth = rng.random((9, 9)) < 0.6
+    truth[0, :] = truth[:, 0] = False
+    yy, xx = np.mgrid[0:9, 0:9]
+    shade = 1 - 0.65 * np.exp(-((xx - yy) / 2.0) ** 2)
+    means = np.where(truth, 215.0, 35.0) * shade
+    assert (C.light_cells(means) == truth).all()
+    assert not ((means > C.white_threshold(means)) == truth).all()   # el umbral global sí falla
+
+
+@needs_model
+@pytest.mark.parametrize("rotation", [None, "ROTATE_90_CLOCKWISE", "ROTATE_180"])
+def test_extract_rotated(rotation):
+    """Foto girada 90° o volteada 180°: se prueba cada orientación y se lee igual."""
+    import cv2
+    from vision.pipeline import extract
+
+    rng = random.Random(7)
+    puzzle = random_puzzle(rng)
+    img = cv2.cvtColor(render_board(puzzle, rng), cv2.COLOR_RGB2BGR)
+    if rotation:
+        img = cv2.rotate(img, getattr(cv2, rotation))
+    assert extract(img, engine="cnn").data["grid"] == puzzle.to_grid()

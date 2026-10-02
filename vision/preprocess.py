@@ -76,11 +76,21 @@ def binarize(gray: np.ndarray) -> np.ndarray:
 
 
 def order_corners(pts: np.ndarray) -> np.ndarray:
-    """Ordena 4 puntos como (arriba-izq, arriba-der, abajo-der, abajo-izq)."""
+    """Ordena 4 puntos como (arriba-izq, arriba-der, abajo-der, abajo-izq).
+
+    Se ordenan por ángulo alrededor del centroide (sentido horario) y se empieza
+    por el más cercano a la esquina superior izquierda. A diferencia de usar
+    argmin/argmax de x+y y de y-x, nunca repite un punto aunque el tablero esté
+    girado ~45° en la foto (antes el cuadrilátero degeneraba en un triángulo).
+    Si el giro es grande, el tablero puede quedar rotado 90°/180°: eso lo corrige
+    la selección de orientación en vision/pipeline.py.
+    """
     pts = pts.reshape(4, 2).astype(np.float32)
-    s, d = pts.sum(1), np.diff(pts, axis=1).ravel()
-    return np.array([pts[s.argmin()], pts[d.argmin()], pts[s.argmax()], pts[d.argmax()]],
-                    dtype=np.float32)
+    c = pts.mean(0)
+    ang = np.arctan2(pts[:, 1] - c[1], pts[:, 0] - c[0])   # y hacia abajo: creciente = horario
+    pts = pts[np.argsort(ang)]
+    pts = np.roll(pts, -int(np.argmin(pts.sum(1))), axis=0)
+    return pts.astype(np.float32)
 
 
 def _quad_from_points(points: np.ndarray) -> np.ndarray:

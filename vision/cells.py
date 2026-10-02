@@ -65,10 +65,62 @@ def white_threshold(means: np.ndarray) -> float:
     return float(t)
 
 
+def _split(values: np.ndarray) -> tuple[float, float]:
+    """Mejor partición de valores 1D en dos grupos (Otsu exacto para pocos valores).
+
+    Devuelve (umbral = punto medio entre las medias de los grupos, separación = diferencia
+    de medias)."""
+    v = np.sort(np.asarray(values, np.float64).ravel())
+    n = len(v)
+    if n < 2:
+        return float(v[0]) if n else 0.0, 0.0
+    cs, best = np.cumsum(v), (-1.0, 0.0, 0.0)
+    for k in range(1, n):
+        m0, m1 = cs[k - 1] / k, (cs[-1] - cs[k - 1]) / (n - k)
+        between = k * (n - k) * (m1 - m0) ** 2          # varianza entre clases (sin normalizar)
+        if between > best[0]:
+            best = (between, (m0 + m1) / 2, m1 - m0)
+    return float(best[1]), float(best[2])
+
+
+def cell_thresholds(means: np.ndarray, radius: int = 2, min_ratio: float = 1.3) -> np.ndarray:
+    """Umbral claro/oscuro para cada celda, robusto a sombras e iluminación desigual.
+
+    Una sombra multiplica la luz, así que se trabaja en escala logarítmica (la
+    sombra se vuelve un corrimiento). Cada celda se compara con sus vecinas
+    (ventana de (2·radius+1)² celdas): umbral de Otsu local entre el grupo claro y
+    el oscuro de la ventana. Si la ventana es casi homogénea (todas claras o todas
+    oscuras, razón < min_ratio) se usa el umbral global. Así una celda blanca en
+    sombra sigue siendo "la clara" de su vecindario aunque sea más oscura que una
+    celda gris iluminada al otro lado del tablero.
+    """
+    t_glob = white_threshold(means)
+    L = np.log(np.clip(means.astype(np.float64), 1.0, 255.0))
+    out = np.full(means.shape, t_glob, np.float64)
+    R, C = L.shape
+    for r in range(R):
+        for c in range(C):
+            win = L[max(0, r - radius): r + radius + 1, max(0, c - radius): c + radius + 1]
+            t, sep = _split(win)
+            if sep >= np.log(min_ratio):
+                out[r, c] = float(np.exp(t))
+    return out
+
+
+def light_cells(means: np.ndarray, **kw) -> np.ndarray:
+    """True = celda clara (ver cell_thresholds)."""
+    return means > cell_thresholds(means, **kw)
+
+
 def has_content(cell: np.ndarray) -> bool:
-    """¿La celda contiene trazos (dígitos o diagonal) sobre su fondo, de cualquier color?"""
+    """¿La celda contiene trazos (dígitos o diagonal) sobre su fondo, de cualquier color?
+
+    Se suaviza antes de comparar con el fondo: el grano del papel/tóner y los
+    brillos de una foto (ruido fino) no deben contar como trazos."""
     h, w = cell.shape
-    inner = cell[int(h * 0.14): int(h * 0.86), int(w * 0.14): int(w * 0.86)].astype(np.float32)
+    inner = cell[int(h * 0.14): int(h * 0.86), int(w * 0.14): int(w * 0.86)]
+    k = max(3, (min(h, w) // 25) | 1)
+    inner = cv2.GaussianBlur(inner, (k, k), 0).astype(np.float32)
     bg = float(np.median(inner))
     return (np.abs(inner - bg) > 50).mean() > 0.015
 
@@ -85,7 +137,7 @@ def classify_cells(gray: np.ndarray, grid: Grid) -> np.ndarray:
     usa el grupo que casi nunca tiene contenido.
     """
     means = _cell_medians(gray, grid)
-    light = means > white_threshold(means)
+    light = light_cells(means)
     content = np.array([[has_content(crop_cell(gray, grid, r, c)) for c in range(grid.cols)]
                         for r in range(grid.rows)])
     edge = np.zeros_like(content)
@@ -96,7 +148,12 @@ def classify_cells(gray: np.ndarray, grid: Grid) -> np.ndarray:
     else:
         rate = lambda m: content[m].mean() if m.any() else 1.0  # noqa: E731
         fill = light if rate(light) <= rate(~light) else ~light
-    return fill & ~content
+    fill = fill & ~content
+    # Regla del Kakuro: una celda de la 1.ª fila o la 1.ª columna nunca se rellena
+    # (no tendría pista arriba o a la izquierda). Evita errores por sombras en el borde.
+    fill[0, :] = False
+    fill[:, 0] = False
+    return fill
 
 
 def _ink_percentile(cell: np.ndarray) -> np.ndarray | None:
@@ -296,7 +353,9 @@ def triangle_ink(cell: np.ndarray, t_white: float):
 
 def analyze_cells(gray: np.ndarray, grid: Grid) -> list[list[CellInfo]]:
     white = classify_cells(gray, grid)
-    t_white = white_threshold(_cell_medians(gray, grid))
+    # umbral "claro" por celda (local): con sombras un triángulo blanco puede quedar
+    # más oscuro que el umbral global y se leería con la polaridad equivocada
+    t_cell = cell_thresholds(_cell_medians(gray, grid))
     out = []
     for r in range(grid.rows):
         row = []
@@ -305,7 +364,7 @@ def analyze_cells(gray: np.ndarray, grid: Grid) -> list[list[CellInfo]]:
                 row.append(CellInfo(WHITE))
                 continue
             cell = crop_cell(gray, grid, r, c, 0.0)
-            tri = triangle_ink(cell, t_white)
+            tri = triangle_ink(cell, t_cell[r, c])
             if tri is not None:          # algún triángulo claro: polaridad por triángulo
                 ink, soft = tri
             else:                        # celda oscura (estilo clásico)

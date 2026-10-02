@@ -34,9 +34,17 @@ class Grid:
     cols: int
     ys: np.ndarray   # rows + 1 posiciones de líneas horizontales
     xs: np.ndarray   # cols + 1 posiciones de líneas verticales
+    # Posición local de cada línea (papel curvado / rectificación imperfecta):
+    # ys_local[i, c] = y de la línea horizontal i a la altura de la columna c;
+    # xs_local[j, r] = x de la línea vertical j a la altura de la fila r.
+    ys_local: np.ndarray | None = None
+    xs_local: np.ndarray | None = None
 
     def cell_box(self, r: int, c: int) -> tuple[int, int, int, int]:
-        return int(self.xs[c]), int(self.ys[r]), int(self.xs[c + 1]), int(self.ys[r + 1])
+        if self.ys_local is None or self.xs_local is None:
+            return int(self.xs[c]), int(self.ys[r]), int(self.xs[c + 1]), int(self.ys[r + 1])
+        return (int(self.xs_local[c, r]), int(self.ys_local[r, c]),
+                int(self.xs_local[c + 1, r]), int(self.ys_local[r + 1, c]))
 
 
 def _norm(p: np.ndarray) -> np.ndarray:
@@ -178,6 +186,7 @@ def detect_grid(gray: np.ndarray, rows: int | None = None, cols: int | None = No
     # Recortar márgenes claros y lisos (papel): toda fila del tablero cruza líneas verticales
     # de la grilla y toda columna cruza líneas horizontales; una franja sin bordes
     # en el extremo de la imagen es margen, no tablero.
+    full_gray = gray
     oy, ox = active_range(gray)
     gray = gray[oy[0]: oy[1], ox[0]: ox[1]]
     py, px = line_profiles(gray)
@@ -187,7 +196,69 @@ def detect_grid(gray: np.ndarray, rows: int | None = None, cols: int | None = No
         bx_ = (gray.std(axis=0) > 30).astype(float)
     ay, by, rows = fit_lines(py, rows, edge_lines, by_)
     ax, bx, cols = fit_lines(px, cols, edge_lines, bx_)
-    return Grid(rows, cols, refine_lines(py, ay, by, rows) + oy[0], refine_lines(px, ax, bx, cols) + ox[0])
+    grid = Grid(rows, cols, refine_lines(py, ay, by, rows) + oy[0], refine_lines(px, ax, bx, cols) + ox[0])
+    return refine_local(full_gray, grid)
+
+
+def _line_maps(gray: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+    """Mapas 2D de evidencia de líneas horizontales y verticales (tinta + bordes)."""
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    h, w = gray.shape
+    block = max(11, (min(h, w) // 25) | 1)
+    ink = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block, 5)
+    gy = np.abs(cv2.Sobel(blur, cv2.CV_32F, 0, 1, ksize=3))
+    gx = np.abs(cv2.Sobel(blur, cv2.CV_32F, 1, 0, ksize=3))
+    thr = max(30.0, float(np.percentile(np.maximum(gx, gy), 90)) * 0.5)
+    ey = (gy > thr).astype(np.uint8) * 255
+    ex = (gx > thr).astype(np.uint8) * 255
+    hk = cv2.getStructuringElement(cv2.MORPH_RECT, (k, 1))
+    vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, k))
+    hmap = cv2.morphologyEx(ink, cv2.MORPH_OPEN, hk).astype(np.float32) + cv2.morphologyEx(ey, cv2.MORPH_OPEN, hk)
+    vmap = cv2.morphologyEx(ink, cv2.MORPH_OPEN, vk).astype(np.float32) + cv2.morphologyEx(ex, cv2.MORPH_OPEN, vk)
+    return hmap, vmap
+
+
+def refine_local(gray: np.ndarray, grid: Grid, search: float = 0.22) -> Grid:
+    """Ajusta cada línea de la grilla por tramos (una posición por celda).
+
+    Si el papel no está plano (hoja curvada o doblada) la homografía no deja las
+    líneas perfectamente rectas y una sola posición por línea corta celdas por la
+    mitad. Aquí, para cada línea y cada tramo de celda, se busca el pico de
+    evidencia de línea cerca de la posición global (±search·celda) y luego se suaviza
+    con la mediana de los tramos vecinos para ignorar dígitos o diagonales."""
+    ch = (grid.ys[-1] - grid.ys[0]) / grid.rows
+    cw = (grid.xs[-1] - grid.xs[0]) / grid.cols
+    k = max(7, int(0.5 * min(ch, cw)))
+    hmap, vmap = _line_maps(gray, k)
+
+    def track(evidence, glob, other, n_seg, size, axis):
+        out = np.zeros((len(glob), n_seg))
+        win = max(2, int(search * size))
+        for i, q in enumerate(glob):
+            for sgm in range(n_seg):
+                a, b = int(other[sgm]), int(other[sgm + 1])
+                a, b = a + (b - a) // 6, b - (b - a) // 6          # centro del tramo
+                lo, hi = max(0, int(q) - win), min(evidence.shape[axis], int(q) + win + 1)
+                if b <= a or hi <= lo:
+                    out[i, sgm] = q
+                    continue
+                prof = evidence[lo:hi, a:b].sum(1) if axis == 0 else evidence[a:b, lo:hi].sum(0)
+                j = int(q) - lo
+                at_glob = prof[max(0, j - 1): j + 2].max() if 0 <= j < len(prof) else 0.0
+                strong = prof.max() > 0.35 * 255 * (b - a)
+                # sólo se mueve si en la posición global casi no hay línea y cerca sí:
+                # así una sombra o un dígito no "atraen" una línea que ya estaba bien
+                moved = strong and prof.max() > 1.5 * at_glob + 0.1 * 255 * (b - a)
+                out[i, sgm] = lo + int(np.argmax(prof)) if moved else q
+            # suavizado: mediana de 3 tramos (un dígito o una diagonal no mueve la línea)
+            row = out[i].copy()
+            for sgm in range(n_seg):
+                out[i, sgm] = np.median(row[max(0, sgm - 1): sgm + 2])
+        return out
+
+    ys_local = track(hmap, grid.ys, grid.xs, grid.cols, ch, 0)
+    xs_local = track(vmap, grid.xs, grid.ys, grid.rows, cw, 1)
+    return Grid(grid.rows, grid.cols, grid.ys, grid.xs, ys_local, xs_local)
 
 
 def draw_grid(color: np.ndarray, grid: Grid) -> np.ndarray:
