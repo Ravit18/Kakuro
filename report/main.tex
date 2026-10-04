@@ -1,17 +1,26 @@
-\documentclass[11pt,a4paper]{article}
+\documentclass[conference,a4paper]{IEEEtran}
+\IEEEoverridecommandlockouts
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage[spanish,es-tabla]{babel}
-\usepackage[margin=2.3cm]{geometry}
-\usepackage{graphicx,booktabs,amsmath,hyperref,float,subcaption}
+\usepackage{graphicx,booktabs,amsmath,amssymb}
+\usepackage[caption=false,font=footnotesize]{subfig}
 \usepackage{listings,xcolor}
-\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,backgroundcolor=\color{gray!8}}
-
-\title{Kakuro: de la imagen a la solución\\\large Visión computacional + Programación con Restricciones}
-\author{Equipo: \underline{\hspace{6cm}}\\Tópicos en Ciencias de la Computación -- UPC}
-\date{\today}
+\usepackage{cite}
+\usepackage[hidelinks]{hyperref}
+\lstset{basicstyle=\ttfamily\scriptsize,breaklines=true,frame=single,backgroundcolor=\color{gray!8},columns=fullflexible}
 
 \begin{document}
+
+\title{Kakuro: de la imagen a la solución mediante visión computacional y programación con restricciones}
+
+\author{
+\IEEEauthorblockN{Bruno Medina Agnini, Eduardo Bravo, Ricardo Victor Ambrocio Tantalean}
+\IEEEauthorblockA{\textit{CC58 -- Tópicos en Ciencias de la Computación}\\
+\textit{Universidad Peruana de Ciencias Aplicadas (UPC)}\\
+Lima, Perú}
+}
+
 \maketitle
 
 \begin{abstract}
@@ -22,6 +31,10 @@ de celdas y reconocimiento de dígitos con una CNN entrenada sólo con datos sin
 alcanza \textbf{100\%} de pistas correctas y \textbf{100\%} de tableros extraídos sin error.
 \end{abstract}
 
+\begin{IEEEkeywords}
+Kakuro, visión computacional, OCR, redes neuronales convolucionales, programación con restricciones, CP-SAT
+\end{IEEEkeywords}
+
 \section{Problema}
 Un Kakuro es una grilla con celdas blancas (a rellenar con dígitos 1--9) y celdas negras. Algunas celdas negras están
 divididas por una diagonal y contienen pistas: el número del triángulo inferior izquierdo es la suma de la corrida
@@ -30,21 +43,21 @@ Dentro de una corrida no se repiten dígitos.
 
 \section{Fase 1: visión computacional e IA}
 
-\begin{figure}[H]
+\begin{figure*}[!t]
 \centering
-\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/binary.png}\caption{Binarización adaptativa}\end{subfigure}
-\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/board.png}\caption{Tablero y esquinas}\end{subfigure}
-\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/grid.png}\caption{Rectificado + grilla}\end{subfigure}\\[4pt]
-\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/cells.png}\caption{Clasificación de celdas}\end{subfigure}
-\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/digits.png}\caption{Dígitos 28$\times$28}\end{subfigure}
-\begin{subfigure}{0.32\textwidth}\includegraphics[width=\linewidth]{figs/solution.png}\caption{Solución sobre la foto}\end{subfigure}
+\subfloat[Binarización adaptativa]{\includegraphics[width=0.31\textwidth]{figs/binary.png}}\hfil
+\subfloat[Tablero y esquinas]{\includegraphics[width=0.31\textwidth]{figs/board.png}}\hfil
+\subfloat[Rectificado + grilla]{\includegraphics[width=0.31\textwidth]{figs/grid.png}}\\
+\subfloat[Clasificación de celdas]{\includegraphics[width=0.31\textwidth]{figs/cells.png}}\hfil
+\subfloat[Dígitos 28$\times$28]{\includegraphics[width=0.31\textwidth]{figs/digits.png}}\hfil
+\subfloat[Solución sobre la foto]{\includegraphics[width=0.31\textwidth]{figs/solution.png}}
 \caption{Etapas del pipeline sobre una imagen con ángulo fuerte (\texttt{s05\_angulo\_fuerte}).}
 \label{fig:pipeline}
-\end{figure}
+\end{figure*}
 
 \subsection{Preprocesamiento y corrección de perspectiva (\texttt{vision/preprocess.py})}
 \begin{enumerate}
-  \item Conversión a escala de grises y desenfoque gaussiano $5\times5$.
+  \item Conversión a escala de grises y desenfoque gaussiano $5\times5$ (OpenCV~\cite{opencv}).
   \item Binarización adaptativa gaussiana invertida (bloque $\approx$ lado/30): robusta a iluminación no uniforme, a diferencia de un umbral global.
   \item Localización del tablero como la \emph{componente conexa con más píxeles de tinta} (líneas y bordes de celdas negras).
         Elegir la componente y no el contorno más grande evita confundir el tablero con el borde de la hoja cuando la foto se toma sobre una mesa.
@@ -80,7 +93,10 @@ Optimizador AdamW, OneCycleLR, \emph{label smoothing} 0.05 y aumentación en lí
 \textbf{Línea base}: Tesseract 5~\cite{tesseract} preentrenado, modo línea (\texttt{--psm 7}) con lista blanca 0--9.
 
 \textbf{Reparación guiada por el dominio}: una corrida de $n$ celdas sólo admite sumas en
-$\left[\frac{n(n+1)}{2},\ \sum_{i=10-n}^{9} i\right]$. Si la lectura es imposible, se reemplaza por la siguiente
+\begin{equation}
+s \in \left[\frac{n(n+1)}{2},\ \sum_{i=10-n}^{9} i\right].
+\end{equation}
+Si la lectura es imposible, se reemplaza por la siguiente
 alternativa más probable de la CNN (top-3 por dígito) que sea factible.
 
 \subsection{Estructura de salida}
@@ -106,10 +122,12 @@ No existe un dataset público de imágenes de Kakuro etiquetadas, por lo que se 
 Con 2500 tableros de 5 estilos se obtuvieron 63\,078 dígitos (90\% entrenamiento / 10\% validación).
 
 \subsection{Dataset de prueba (\texttt{data/test\_set/})}
-\begin{figure}[H]
-\centering\includegraphics[width=0.9\textwidth]{figs/test_set.jpg}
+\begin{figure*}[!t]
+\centering\includegraphics[width=0.85\textwidth]{figs/test_set.jpg}
 \caption{Dataset de prueba: 10 fotos simuladas, cada una con una condición controlada, y 7 versiones digitales en 5 estilos.}
-\end{figure}
+\label{fig:testset}
+\end{figure*}
+La Fig.~\ref{fig:testset} muestra el dataset de prueba:
 \begin{itemize}
   \item \textbf{Digitales (7)}: render limpio 5$\times$5 y 10$\times$10, estilo gris, captura reducida al 55\% con JPEG, estilo app invertido, triángulo blanco/negro y color.
   \item \textbf{Fotos simuladas (10)}: luz baja, sombra lateral, reflejo brillante, ángulo leve, ángulo fuerte, rotación 10°,
@@ -123,9 +141,12 @@ Las semillas del dataset de prueba son distintas de las de entrenamiento.
 Métricas: \emph{grid} = filas$\times$columnas correctas; \emph{celdas} = blanca/no blanca correcta;
 \emph{pistas} = valor exacto por (celda, dirección); \emph{exacto} = tablero sin ningún error;
 \emph{resuelto} = el solver, con el JSON extraído, produce una solución válida del tablero real.
+La Tabla~\ref{tab:vision} resume los resultados.
 
-\begin{table}[H]
+\begin{table*}[!t]
 \centering
+\caption{Resultados de extracción (\%). Tiempo medio por imagen: $\approx$0.3\,s con la CNN y $\approx$2\,s con Tesseract (CPU).}
+\label{tab:vision}
 \begin{tabular}{llcccccc}
 \toprule
 Conjunto & OCR & Imágenes & Grid & Celdas & Pistas & Exacto & Resuelto\\
@@ -142,8 +163,7 @@ Imágenes reales (6 estilos) & CNN & 11 & \multicolumn{5}{c}{11/11 válidas, sin
 Imágenes reales (6 estilos) & Tesseract & 11 & \multicolumn{5}{c}{1/11}\\
 \bottomrule
 \end{tabular}
-\caption{Resultados de extracción. Tiempo medio por imagen: $\approx$0.3\,s con la CNN y $\approx$2\,s con Tesseract (CPU).}
-\end{table}
+\end{table*}
 
 \noindent Precisión de la CNN en validación (recortes): \textbf{98.6\%}. El conjunto ``sintético aleatorio'' usa la misma
 aumentación agresiva del entrenamiento (celdas de hasta 31\,px, contraste muy bajo) y sirve como prueba de estrés: la mayoría
@@ -151,7 +171,10 @@ de sus errores son pistas casi ilegibles incluso para una persona. La CNN supera
 unas 20 veces más rápida; la mayor diferencia aparece con desenfoque, donde Tesseract lee sólo 4 de 22 pistas.
 
 \subsection{Comparación de modelos CP (Fase 2)}
-\begin{table}[H]\centering
+La Tabla~\ref{tab:solver} compara las dos formulaciones del solver.
+\begin{table}[!t]\centering
+\caption{Promedio de 3 tableros por patrón (\texttt{python -m scripts.benchmark solver}).}
+\label{tab:solver}
 \begin{tabular}{lcccc}\toprule
 Patrón & \multicolumn{2}{c}{AllDifferent + suma} & \multicolumn{2}{c}{Tabla}\\
  & tiempo (s) & ramas & tiempo (s) & ramas\\\midrule
@@ -160,7 +183,6 @@ Patrón & \multicolumn{2}{c}{AllDifferent + suma} & \multicolumn{2}{c}{Tabla}\\
 8$\times$8 & 0.022 & 1347 & 0.076 & 3388\\
 10$\times$10 & 0.046 & 2556 & 0.298 & 7342\\\bottomrule
 \end{tabular}
-\caption{Promedio de 3 tableros por patrón (\texttt{python -m scripts.benchmark solver}).}
 \end{table}
 
 \subsection{Robustez a estilos reales}
@@ -186,17 +208,23 @@ el validador de la Fase~1 la rechaza correctamente.
 \end{itemize}
 
 \section{Fase 2: modelo de Programación con Restricciones}
-Variables $x_c \in D_c$ por celda blanca, con $D_c = \{1..9\} \cap \text{cand}(R_h(c)) \cap \text{cand}(R_v(c))$.
-Para cada corrida $R$ con suma $s_R$: \texttt{AllDifferent}$(\{x_c\}_{c\in R})$ y $\sum_{c\in R} x_c = s_R$.
+Variables $x_c \in D_c$ por celda blanca, con
+\begin{equation}
+D_c = \{1,\dots,9\} \cap \text{cand}(R_h(c)) \cap \text{cand}(R_v(c)).
+\end{equation}
+Para cada corrida $R$ con suma $s_R$:
+\begin{equation}
+\texttt{AllDifferent}(\{x_c\}_{c\in R}), \qquad \sum_{c\in R} x_c = s_R.
+\end{equation}
 Variante: una restricción de tabla (\texttt{AddAllowedAssignments}) por corrida. Se resuelve con CP-SAT~\cite{ortools}.
 
 \begin{thebibliography}{9}
-\bibitem{opencv} G.~Bradski. The OpenCV Library. \emph{Dr. Dobb's Journal of Software Tools}, 2000.
-\bibitem{otsu} N.~Otsu. A threshold selection method from gray-level histograms. \emph{IEEE Trans. SMC}, 9(1):62--66, 1979.
-\bibitem{lecun} Y.~LeCun, L.~Bottou, Y.~Bengio, P.~Haffner. Gradient-based learning applied to document recognition. \emph{Proc. IEEE}, 86(11), 1998.
-\bibitem{tesseract} R.~Smith. An overview of the Tesseract OCR engine. \emph{ICDAR}, 2007.
-\bibitem{tobin} J.~Tobin et al. Domain randomization for transferring deep neural networks from simulation to the real world. \emph{IROS}, 2017.
-\bibitem{pytorch} A.~Paszke et al. PyTorch: An imperative style, high-performance deep learning library. \emph{NeurIPS}, 2019.
-\bibitem{ortools} L.~Perron, V.~Furnon. OR-Tools CP-SAT. Google, \url{https://developers.google.com/optimization}.
+\bibitem{opencv} G.~Bradski, ``The OpenCV Library,'' \emph{Dr. Dobb's Journal of Software Tools}, 2000.
+\bibitem{otsu} N.~Otsu, ``A threshold selection method from gray-level histograms,'' \emph{IEEE Trans. Syst., Man, Cybern.}, vol.~9, no.~1, pp.~62--66, 1979.
+\bibitem{lecun} Y.~LeCun, L.~Bottou, Y.~Bengio, and P.~Haffner, ``Gradient-based learning applied to document recognition,'' \emph{Proc. IEEE}, vol.~86, no.~11, pp.~2278--2324, 1998.
+\bibitem{tesseract} R.~Smith, ``An overview of the Tesseract OCR engine,'' in \emph{Proc. ICDAR}, 2007, pp.~629--633.
+\bibitem{tobin} J.~Tobin \emph{et al.}, ``Domain randomization for transferring deep neural networks from simulation to the real world,'' in \emph{Proc. IROS}, 2017.
+\bibitem{pytorch} A.~Paszke \emph{et al.}, ``PyTorch: An imperative style, high-performance deep learning library,'' in \emph{Proc. NeurIPS}, 2019.
+\bibitem{ortools} L.~Perron and V.~Furnon, ``OR-Tools CP-SAT,'' Google. [Online]. Available: \url{https://developers.google.com/optimization}
 \end{thebibliography}
 \end{document}
