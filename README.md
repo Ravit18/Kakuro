@@ -82,33 +82,30 @@ python -m scripts.benchmark solver                                     # AllDiff
 pytest                                                                 # tests de solver y visión
 ```
 
-Resultados (semillas distintas de las de entrenamiento). CNN: 98.6 % de acierto en validación con 63 078 recortes de 5 estilos.
+Resultados con la CNN (semillas distintas de las de entrenamiento). Precisión en validación: 98.6 % con 63 078 recortes de los 5 estilos sintéticos.
 
-| Conjunto | OCR | Imgs | Grid | Celdas | Pistas | Tablero exacto | Resuelto |
+| Conjunto | Imgs | Grid | Celdas | Pistas | Tablero exacto | Resuelto | Tiempo medio |
 |---|---|---|---|---|---|---|---|
-| `test_set/digital` (5 estilos) | CNN | 7 | 100 % | 100 % | 100 % | 100 % | 100 % |
-| `test_set/digital` | Tesseract | 7 | 100 % | 100 % | 97.4 % | 42.9 % | 42.9 % |
-| `test_set/simulated` | CNN | 10 | 100 % | 100 % | 100 % | 100 % | 100 % |
-| `test_set/simulated` | Tesseract | 10 | 100 % | 100 % | 86.7 % | 30 % | 30 % |
-| Sintético aleatorio (estrés, 5 estilos) | CNN | 100 | 90 % | 89.4 % | 84.0 % | 63 % | 63 % |
-| Sintético aleatorio (estrés, 5 estilos) | Tesseract | 100 | 90 % | 89.4 % | 52.1 % | 11 % | 11 % |
+| `test_set/digital` | 4 | 100 % | 100 % | 100 % | 100 % | 100 % | 6.0 s |
+| `test_set/simulated` | 10 | 100 % | 100 % | 100 % | 100 % | 100 % | 6.1 s |
+| `test_set/printables` | 8 | 100 % | 100 % | 100 % | 100 % | 100 % | 5.3 s |
+| `test_set/real` (capturas de app) | 11 | 100 % | 100 % | 100 % | 100 % | 100 % | 0.3 s |
+| Sintético aleatorio (estrés, 5 estilos) | 100 | 90 % | 89.6 % | 82.9 % | 65 % | 65 % | 2.6 s |
 
-**Imágenes reales** (12 de internet y capturas de app, 6 estilos distintos; una no es un Kakuro válido):
+Las capturas de app tienen solución única y se aceptan en la primera orientación probada. Los tableros generados por
+`make_test_set` tienen más de una solución, así que el pipeline prueba las 4 orientaciones y tarda más.
 
-| OCR | Tableros válidos leídos sin avisos y con solución única |
-|---|---|
-| CNN | **11 / 11** |
-| Tesseract | 1 / 11 |
+Tesseract (versión anterior del pipeline, sin búsqueda de orientación ni reparación con el solver): 86.7 % de pistas en
+`simulated` y 1/11 capturas de app sin errores. Para volver a medirlo: `--engine tesseract`.
 
-Tiempo por imagen: ~0.3 s con la CNN y ~2 s con Tesseract (CPU).
+## Dataset de prueba (`data/test_set/`, 33 imágenes)
 
-## Dataset de prueba (`data/test_set/`)
-
-`python -m scripts.make_test_set` lo regenera:
-
-- `digital/` (7): render limpio, tablero grande, estilo gris, captura reducida con JPEG, estilo app invertido, triángulo blanco/negro y color.
+- `digital/` (4): render limpio 5×5 y 10×10, estilo gris 8×8 y captura reducida al 55 % con JPEG (7×7).
 - `simulated/` (10): una condición por foto (luz baja, sombra, reflejo, ángulo leve o fuerte, rotación, desenfoque, fondo oscuro, JPEG fuerte, luz cálida).
-- `printables/kakuro_para_imprimir.pdf` (8 tableros A4) con su JSON. **Imprímelos, fotografíalos con el celular** y guarda las fotos en `real/` siguiendo `real/LEEME.txt`. Es la parte "impresa" que exige el enunciado y solo la pueden hacer ustedes.
+- `printables/` (8): páginas A4 de `kakuro_para_imprimir.pdf` con su JSON (estilos clásico y gris, 5×5 a 10×10).
+- `real/` (11): capturas de pantalla de una aplicación de Kakuro en el celular, de 7×7 a 16×14 y 6 estilos visuales.
+
+`python -m scripts.make_test_set` regenera `digital/`, `simulated/` y `printables/`.
 
 ## Estructura
 
