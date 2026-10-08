@@ -66,6 +66,8 @@ def main() -> int:
         if args.only_extract:
             return 0
         if args.model == "table":
+            if args.unique:
+                print("Aviso: --unique sólo está implementado con --model global; se ignora.", file=sys.stderr)
             result = cp_table.solve(puzzle)
         else:
             result = cp_model.solve(puzzle, check_unique=args.unique)

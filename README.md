@@ -29,8 +29,12 @@ python main.py data/images/mi_foto.jpg --only-extract
 python main.py foto.jpg --engine tesseract
 python main.py foto.jpg --rows 9 --cols 9
 
-# Desde un JSON (solo la Fase 2)
+# Desde un JSON (solo la Fase 2); --unique comprueba que la solución sea única (modelo global)
 python main.py data/ground_truth/gen_7x7_00.json --unique
+python main.py data/ground_truth/gen_7x7_00.json --model table   # variante con restricciones de tabla
+
+# Una foto real de tablero impreso
+python main.py data/test_set/fotos_impresas/K1_volteado.jpg --unique
 ```
 
 Salidas en `data/outputs/<nombre>/`:
@@ -46,10 +50,18 @@ Salidas en `data/outputs/<nombre>/`:
 | Paso | Módulo | Técnica |
 |---|---|---|
 | 1. Preprocesamiento | `vision/preprocess.py` | Escala de grises, desenfoque gaussiano y binarización adaptativa. El tablero es la componente conexa con más tinta; se toman sus 4 esquinas (envolvente convexa + `approxPolyDP`) y se corrige la perspectiva con `warpPerspective`. Si el tablero toca el borde de la imagen (captura recortada) se usa la imagen completa. El tablero rectificado se pasa a grises por **PCA del color** (máximo contraste: distingue p. ej. amarillo claro de amarillo oscuro) |
-| 2. Segmentación | `vision/grid.py` | Perfiles de líneas (trazos oscuros + bordes Sobel, filtrados con apertura morfológica alargada). Se buscan conjuntamente inicio, fin y n.º de celdas que maximizan *líneas en picos − máximo en el interior de las celdas*; descarta márgenes, sombras y marcos. Las franjas claras sin bordes (papel) se recortan |
-| 3. Clasificación de celdas | `vision/cells.py` | Mediana por celda y Otsu (claro/oscuro). El color "a rellenar" se deduce con una regla del Kakuro: la 1.ª fila y la 1.ª columna nunca se rellenan, así que el color de sus celdas lisas es el de las pistas (funciona con estilos invertidos de apps). Cada triángulo detecta su propio fondo y polaridad del texto; se quitan líneas rectas largas y la diagonal (continua o punteada) y se segmentan los dígitos por componentes conexas |
+| 2. Segmentación | `vision/grid.py` | Perfiles de líneas (trazos oscuros + bordes Sobel, filtrados con apertura morfológica alargada). Se buscan conjuntamente inicio, fin y n.º de celdas que maximizan *líneas en picos − máximo en el interior de las celdas*; descarta márgenes, sombras y marcos. Las franjas claras sin bordes (papel) se recortan y cada línea se ajusta por tramos (papel curvado) |
+| 3. Clasificación de celdas | `vision/cells.py` | Mediana por celda y Otsu local en escala logarítmica (una sombra multiplica la luz; en log es un desplazamiento), con el umbral global si la ventana no tiene contraste. El color "a rellenar" se deduce con una regla del Kakuro: la 1.ª fila y la 1.ª columna nunca se rellenan, así que el color de sus celdas lisas es el de las pistas (funciona con estilos invertidos de apps). Cada triángulo detecta su propio fondo y polaridad del texto; se quitan líneas rectas largas y la diagonal (continua o punteada) y se segmentan los dígitos por componentes conexas |
 | 4. OCR | `vision/ocr.py` | CNN propia (tipo LeNet/VGG, 28×28) en PyTorch. Alternativa: Tesseract `--psm 7` con lista blanca 0-9 |
-| 5. Estructura | `vision/pipeline.py` | JSON `{"rows","cols","grid"}`. Si una suma leída es imposible para su corrida, se corrige con la siguiente lectura más probable de la CNN que sí sea factible |
+| 5. Estructura y validación | `vision/pipeline.py` | JSON `{"rows","cols","grid"}`. Si una suma leída es imposible para su corrida, se usa la siguiente lectura más probable de la CNN que sí sea factible. Se prueban las 4 orientaciones del tablero (hojas volteadas o muy giradas) y se elige la que da un Kakuro válido de solución única. Si el tablero leído no tiene solución, el solver CP prueba lecturas alternativas de las pistas menos seguras (`repair_with_solver`); un tablero que ya tiene solución no se modifica |
+
+## Fase 2: modelo CP (`solver/`)
+
+- Una variable entera por celda blanca, con dominio `{1..9} ∩ candidatos(corrida horizontal) ∩ candidatos(corrida vertical)` (`combos.py`).
+- Por corrida: `AddAllDifferent` y `sum == pista` (restricciones globales, `cp_model.py`). Sin función objetivo: es satisfacción.
+- `--unique` enumera soluciones con un hilo y se detiene en la segunda.
+- Variante `cp_table.py`: una restricción de tabla (`AddAllowedAssignments`) por corrida con todas las permutaciones válidas, si son ≤ 5000.
+- No se usan restricciones reificadas porque todas las restricciones del Kakuro son incondicionales (ver el informe).
 
 ### Datos y entrenamiento
 
@@ -65,32 +77,35 @@ python -m scripts.train_digits --puzzles 4000 --epochs 20 --regen
 python -m scripts.train_digits --real-dir data/images/train   # + tus fotos etiquetadas (fine-tuning)
 ```
 
-### Fotos reales (recomendado para el informe)
+### Fotos reales
 
-1. Exporta tableros limpios para imprimir: `python -m scripts.render_puzzles --from-json data/ground_truth --clean --out data/printables`. También sirven capturas de sitios de Kakuro, citando la fuente.
-2. Fotografíalos con distintos ángulos y luces. Guarda cada foto en `data/images/` junto a un JSON con el mismo nombre (`foto1.jpg` + `foto1.json` con `"grid"`). Para los impresos, basta con copiar el JSON de `data/printables`.
-3. Evalúa: `python -m scripts.benchmark vision --dir data/images`
-
-Usa esas fotos como **conjunto de prueba**. Si tienes muchas, separa algunas en `data/images/train` para afinar el modelo con `--real-dir`.
+`data/test_set/fotos_impresas/` tiene 22 fotos de celular de 7 tableros impresos (K1–K6 y K8) en 6 condiciones, sin metadatos de ubicación. Cada foto tiene al lado un JSON con el mismo nombre: la clave de respuesta del tablero impreso, independiente del pipeline (ver `LEEME.txt`). Para añadir fotos nuevas, guarda cada foto con un JSON del mismo nombre que tenga `"grid"` y evalúa la carpeta con `--dir`. Si se juntan muchas, se pueden separar algunas en `data/images/train` para afinar la CNN con `--real-dir`.
 
 ## Evaluación
 
 ```bash
 python -m scripts.benchmark vision --synthetic 100                     # CNN
 python -m scripts.benchmark vision --synthetic 100 --engine tesseract  # línea base
-python -m scripts.benchmark solver                                     # AllDifferent+suma vs. tabla
+python -m scripts.benchmark vision --dir data/test_set/fotos_impresas # fotos reales
+python -m scripts.benchmark solver --count 3                           # AllDifferent+suma vs. tabla
 pytest                                                                 # tests de solver y visión
 ```
 
-Resultados con la CNN (semillas distintas de las de entrenamiento). Precisión en validación: 98.6 % con 63 078 recortes de los 5 estilos sintéticos.
+Resultados con la CNN (semillas distintas de las de entrenamiento; CPU de 2 núcleos virtuales). Precisión de la CNN en validación: 98.6 % sobre 63 078 recortes **sintéticos** de los 5 estilos (no son fotos).
 
 | Conjunto | Imgs | Grid | Celdas | Pistas | Tablero exacto | Resuelto | Tiempo medio |
 |---|---|---|---|---|---|---|---|
-| `test_set/digital` | 4 | 100 % | 100 % | 100 % | 100 % | 100 % | 6.0 s |
-| `test_set/simulated` | 10 | 100 % | 100 % | 100 % | 100 % | 100 % | 6.1 s |
-| `test_set/printables` | 8 | 100 % | 100 % | 100 % | 100 % | 100 % | 5.3 s |
-| `test_set/real` (capturas de app) | 11 | 100 % | 100 % | 100 % | 100 % | 100 % | 0.3 s |
-| Sintético aleatorio (estrés, 5 estilos) | 100 | 90 % | 89.6 % | 82.9 % | 65 % | 65 % | 2.6 s |
+| `test_set/digital` | 4 | 100 % | 100 % | 100 % | 100 % | 100 % | 2.2 s |
+| `test_set/simulated` | 10 | 100 % | 100 % | 100 % | 100 % | 100 % | 1.5 s |
+| `test_set/printables` (render digital) | 8 | 100 % | 100 % | 100 % | 100 % | 100 % | 1.3 s |
+| `test_set/real` (capturas de app) | 11 | 100 % | 100 % | 100 % | 100 % | 100 % | 0.4 s |
+| `test_set/fotos_impresas` (fotos reales) | 22 | 100 % | 98.7 % | 95.6 % | 81.8 % | 81.8 % | 1.2 s |
+| **Total** | **55** | **100 %** | **99.5 %** | **98.3 %** | **92.7 %** | **92.7 %** | |
+| Sintético aleatorio (estrés, 5 estilos) | 100 | 91 % | 90.5 % | 85.1 % | 71 % | 71 % | 1.2 s |
+
+Fotos reales por condición (tableros exactos): frontal 7/7, ángulo 7/7, poca luz 2/2, sombra 1/3, volteada 1/2, flash 0/1. Antes de los ajustes de robustez eran 8/22 (pistas 52.1 % → 95.6 %). En las 22 fotos, la reparación con el solver cambió 2 pistas y ambas quedaron correctas.
+
+Solver (`--count 3`, tableros aleatorios con varias soluciones): el modelo global es más rápido que el de tabla en los 4 patrones (10×10: 0.05 s frente a 0.35 s). Los 23 tableros con solución única del repositorio (K1–K8, capturas de app y `data/ground_truth`) se resuelven, con prueba de unicidad, sin ramificar.
 
 Las capturas de app tienen solución única y se aceptan en la primera orientación probada. Los tableros generados por
 `make_test_set` tienen más de una solución, así que el pipeline prueba las 4 orientaciones y tarda más.
@@ -98,12 +113,13 @@ Las capturas de app tienen solución única y se aceptan en la primera orientaci
 Tesseract (versión anterior del pipeline, sin búsqueda de orientación ni reparación con el solver): 86.7 % de pistas en
 `simulated` y 1/11 capturas de app sin errores. Para volver a medirlo: `--engine tesseract`.
 
-## Dataset de prueba (`data/test_set/`, 33 imágenes)
+## Dataset de prueba (`data/test_set/`, 55 imágenes)
 
 - `digital/` (4): render limpio 5×5 y 10×10, estilo gris 8×8 y captura reducida al 55 % con JPEG (7×7).
 - `simulated/` (10): una condición por foto (luz baja, sombra, reflejo, ángulo leve o fuerte, rotación, desenfoque, fondo oscuro, JPEG fuerte, luz cálida).
-- `printables/` (8): páginas A4 de `kakuro_para_imprimir.pdf` con su JSON (estilos clásico y gris, 5×5 a 10×10).
-- `real/` (11): capturas de pantalla de una aplicación de Kakuro en el celular, de 7×7 a 16×14 y 6 estilos visuales.
+- `printables/` (8): páginas A4 de `kakuro_para_imprimir.pdf` renderizadas como imagen (digitales, no fotografiadas) con su JSON (estilos clásico y gris, 5×5 a 10×10).
+- `real/` (11): capturas de pantalla de una aplicación de Kakuro en el celular, de 7×7 a 16×14 y 6 estilos visuales. La referencia se obtuvo con el pipeline y se verificó visualmente pista por pista (408 pistas).
+- `fotos_impresas/` (22): fotos de celular de tableros impresos (K1–K6 y K8) en 6 condiciones (frontal, ángulo, poca luz, sombra, volteada, flash), con la clave de respuesta como referencia.
 
 `python -m scripts.make_test_set` regenera `digital/`, `simulated/` y `printables/`.
 
@@ -115,7 +131,9 @@ vision/     preprocess.py, grid.py, cells.py, ocr.py, pipeline.py, models/digits
 render/     synth.py (generador sintético), overlay.py (solución sobre la foto)
 solver/     cp_model.py (AllDifferent + suma), cp_table.py (AllowedAssignments), combos.py
 scripts/    generate_puzzles.py, render_puzzles.py, train_digits.py, benchmark.py
-tests/      test_solver.py, test_vision.py
+tests/      test_solver.py, test_vision.py (42 tests)
+report/     main.tex y main.pdf (informe IEEE), figs/
+data/       test_set/ (55 imágenes + referencias), ground_truth/ (tableros de solución única)
 assets/     fonts/ (Liberation, DejaVu, FreeSans, Poppins; licencias libres OFL/GPL+FE)
 ```
 
