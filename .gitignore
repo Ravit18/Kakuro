@@ -4,3 +4,11 @@ data/outputs/*
 data/digits/
 *.aux
 *.log
+# Originales de las fotos (con metadatos GPS): se publican copias limpias en fotos_impresas/
+data/test_set/impresos/
+data/test_set/*.zip
+# Auxiliares de LaTeX
+*.fls
+*.fdb_latexmk
+*.out
+*.synctex.gz

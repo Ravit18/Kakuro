@@ -1,0 +1,29 @@
+Fotos reales de tableros impresos (22 imágenes)
+
+Origen
+  Los tableros K1-K8 se generaron con solución única (verificada con el solver),
+  se imprimieron en hojas A4 desde kakuros_para_imprimir.pdf y se fotografiaron
+  con un celular (iPhone). Se publican copias SIN metadatos EXIF/GPS, a resolución
+  completa (3024x4032, JPEG). K7 no tiene fotos.
+
+Referencia (ground truth)
+  Cada foto tiene un JSON con el MISMO nombre: es la clave de respuesta del tablero
+  impreso (claves/K*.json) más la condición de la foto. No proviene del pipeline,
+  así que es una referencia independiente.
+
+Tableros
+  K1 clásico 6x6            K2 pistas grises 7x9        K3 triángulos 9x9
+  K4 serif, diagonal punteada 10x10                     K5 invertido (estilo app) 7x7
+  K6 grande 12x12           K7 amarillo 9x7 (sin fotos) K8 celeste 10x10
+
+Condiciones (nombre del archivo: <tablero>_<condición>.jpg)
+  normal (7)           foto frontal con luz de ambiente
+  angulo (7)           cámara inclinada y hoja girada: perspectiva fuerte
+  poca_luz (2)         K1, K5
+  sombra (3)           sombra dura sobre parte del tablero: K3, K4, K6
+  volteado (1)         hoja girada 180°: K1
+  volteado_sombra (1)  hoja girada 180° y con sombra: K2
+  flash (1)            reflejo del flash sobre el papel: K5
+
+Evaluar
+  python -m scripts.benchmark vision --dir data/test_set/fotos_impresas
